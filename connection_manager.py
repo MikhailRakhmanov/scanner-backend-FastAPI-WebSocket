@@ -59,7 +59,7 @@ class ConnectionManager:
             del self.users[login]
 
     async def _log_all_users(self):
-        users_state = [{"login": k, "platform": v.current_platform} for k, v in self.users.items()]
+        users_state = [v.to_dict() for _, v in self.users.items()]
         logger.info(f"Users State: {json.dumps(users_state)}")
 
     async def get_user(self, login: str) -> Optional[UserContext]:
