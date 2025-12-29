@@ -1,3 +1,5 @@
+pyjwt
+pydantic
 asyncpg
 fastapi
 uvicorn

@@ -1,9 +1,9 @@
-
 import logging
 import jwt
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query,  HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -12,12 +12,14 @@ from connection_manager import ConnectionManager
 from feign_database import FeignDatabase
 from models import ConnectionType
 
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 JWT_SECRET = "your-super-secret-key-change-me"
 
-
+# Укажите свои данные подключения здесь или через переменную окружения DATABASE_URL
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/dev")
 
 
 class LoginCredentials(BaseModel):
@@ -26,17 +28,30 @@ class LoginCredentials(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db = DatabaseManager()
-    await db.init_database()
-    app.state.db = db
-    feign_db = FeignDatabase()
-    app.state.feign_db = feign_db
-    app.state.manager = ConnectionManager(db, feign_db)
-    yield
+    # 1. Инициализация базы данных с корректным DSN
+    db = DatabaseManager(dsn=DATABASE_URL)
+    try:
+        # Пробуем инициализировать таблицы (теперь с корректным await внутри)
+        await db.init_database()
+        feign_db = FeignDatabase()
+        manager = ConnectionManager(db, feign_db)
+
+        # Сохраняем объекты в state приложения
+        app.state.db = db
+        app.state.feign_db = feign_db
+        app.state.manager = manager
+
+        logger.info("Приложение и база данных успешно инициализированы")
+        yield
+    finally:
+        # 2. Корректное закрытие пула соединений при выключении
+        await db.close()
+        logger.info("Соединение с базой данных закрыто")
 
 
 app = FastAPI(title="Scanner Backend", lifespan=lifespan)
 
+# Middlewares
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,10 +61,11 @@ app.add_middleware(
 )
 
 
-# --- НОВЫЙ ЭНДПОИНТ ИСТОРИИ (КОТОРОГО НЕ БЫЛО) ---
+# --- ЭНДПОИНТЫ ---
+
 @app.get("/api/history")
 async def get_history(
-        id: Optional[int] = Query(None),  # ДОБАВЛЕНО
+        id: Optional[int] = Query(None),
         date_from: Optional[str] = Query(None),
         date_to: Optional[str] = Query(None),
         platform: Optional[int] = Query(None),
@@ -64,9 +80,8 @@ async def get_history(
     db: DatabaseManager = app.state.db
     offset = (page - 1) * size
 
-    # Передаем id в оба метода
     items = await db.get_scan_pairs(
-        id=id, # ДОБАВЛЕНО
+        id=id,
         platform=platform,
         login=login,
         product=product,
@@ -76,17 +91,17 @@ async def get_history(
         is_overwrite=is_overwrite,
         limit=size,
         offset=offset,
-        sort=sort # Передаем как есть, DatabaseManager сам разберется
+        sort=sort
     )
 
     total = await db.get_scan_pairs_count(
-        id=id, # ДОБАВЛЕНО
+        id=id,
         platform=platform,
         login=login,
         product=product,
         legacy_synced=legacy_synced,
         date_from=date_from,
-        date_to=date_to, # ДОБАВЛЕНО
+        date_to=date_to,
         is_overwrite=is_overwrite
     )
 
@@ -95,25 +110,28 @@ async def get_history(
         "total": total,
         "page": page,
         "size": size,
-        "pages": (total + size - 1) // size
+        "pages": (total + size - 1) // size if total > 0 else 0
     }
+
 
 @app.post("/auth/login")
 async def authenticate_user(credentials: LoginCredentials):
-    login = credentials.login
     feign_db: FeignDatabase = app.state.feign_db
-    if not feign_db.get_user_by_login(login):
+    if not feign_db.get_user_by_login(credentials.login):
         raise HTTPException(status_code=401, detail="Пользователь не найден")
-    token = jwt.encode({"login": login}, JWT_SECRET, algorithm="HS256")
-    return {"login": login, "token": token}
+    token = jwt.encode({"login": credentials.login}, JWT_SECRET, algorithm="HS256")
+    return {"login": credentials.login, "token": token}
 
+@app.get("/api/scanners")
+async def get_scanners():
+    return await app.state.manager.get_users()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     manager: ConnectionManager = websocket.app.state.manager
     feign_db: FeignDatabase = websocket.app.state.feign_db
     await websocket.accept()
-    login, type = None, ConnectionType.NONE
+    login, conn_type = None, ConnectionType.NONE
 
     try:
         data = await websocket.receive_json()
@@ -126,7 +144,7 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
                 login = payload.get("login")
-            except:
+            except Exception:
                 await websocket.close(code=1008)
                 return
         else:
@@ -136,26 +154,27 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.close(code=1008)
             return
 
-        type = ConnectionType[data.get("type")]
-        await manager.connect(websocket, login, type)
+        conn_type = ConnectionType[data.get("type", "NONE")]
+        await manager.connect(websocket, login, conn_type)
 
         user_context = await manager.get_user(login)
         await websocket.send_json(user_context.to_dict())
 
         while True:
             msg = await websocket.receive_json()
-            if msg.get("event") == "new_pair" and type:
-                # Приводим к int, так как со сканера может прийти строка
+            if msg.get("event") == "new_pair":
                 p_id = int(msg["platform"]) if msg.get("platform") else None
+                # handle_new_pair теперь сам запускает фоновую задачу синхронизации
                 await manager.handle_new_pair(login, p_id, msg.get("product"))
 
     except WebSocketDisconnect:
-        logger.info(f"Disconnect: {login}")
+        logger.info(f"WebSocket отключен: {login}")
     except Exception as e:
-        logger.error(f"WS Error: {e}")
+        logger.error(f"WebSocket ошибка: {e}")
     finally:
-        if login and type is not None:
-            await manager.disconnect(websocket, login, type)
+        if login and conn_type != ConnectionType.NONE:
+            await manager.disconnect(websocket, login, conn_type)
+
 
 @app.get("/api/graphics")
 async def get_graphics_endpoint(
@@ -164,8 +183,6 @@ async def get_graphics_endpoint(
         platform: Optional[int] = Query(None),
 ):
     db: DatabaseManager = app.state.db
-    # Мы используем те же фильтры, что и в истории, чтобы графики
-    # соответствовали данным в таблице при выборе диапазона дат
     data = await db.get_graphics_data(
         date_from=date_from,
         date_to=date_to,
@@ -173,7 +190,9 @@ async def get_graphics_endpoint(
     )
     return data
 
+
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Запуск сервера uvicorn на порту 8000...")
+
+    logger.info("Запуск сервера uvicorn...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

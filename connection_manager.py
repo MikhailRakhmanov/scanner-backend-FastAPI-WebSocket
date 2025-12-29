@@ -1,9 +1,7 @@
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from fastapi import WebSocket
-from datetime import datetime
 import json
 import logging
-import random
 import asyncio
 from models import ScanRequest, ConnectionType
 from user_context import UserContext
@@ -30,16 +28,17 @@ class ConnectionManager:
             logger.info(f"Контекст создан. Пользователь: {login}, Восстановленная платформа: {recovered_platform}")
 
         user = self.users[login]
-        if type == ConnectionType.WRITER or type == ConnectionType.READWRITER:
+        if type in [ConnectionType.WRITER, ConnectionType.READWRITER]:
             user.input_connections.append(websocket)
             if len(user.input_connections) >= 1:
                 await self._broadcast_event(user, {"event": "scanner_connected"})
-        if type == ConnectionType.READER or type == ConnectionType.READWRITER:
+
+        if type in [ConnectionType.READER, ConnectionType.READWRITER]:
             user.output_connections.append(websocket)
             if user.input_connections:
                 try:
                     await websocket.send_json({"event": "scanner_connected"})
-                except:
+                except Exception:
                     pass
 
         await self._log_all_users()
@@ -47,11 +46,13 @@ class ConnectionManager:
     async def disconnect(self, websocket: WebSocket, login: str, type: ConnectionType):
         if login not in self.users: return
         user = self.users[login]
-        if type == ConnectionType.WRITER or type == ConnectionType.READWRITER:
+
+        if type in [ConnectionType.WRITER, ConnectionType.READWRITER]:
             if websocket in user.input_connections: user.input_connections.remove(websocket)
             if not user.input_connections:
                 await self._broadcast_event(user, {"event": "scanner_refused"})
-        if type == ConnectionType.READER or type == ConnectionType.READWRITER:
+
+        if type in [ConnectionType.READER, ConnectionType.READWRITER]:
             if websocket in user.output_connections: user.output_connections.remove(websocket)
 
         if not user.input_connections and not user.output_connections:
@@ -63,6 +64,9 @@ class ConnectionManager:
 
     async def get_user(self, login: str) -> Optional[UserContext]:
         return self.users.get(login)
+
+    async def get_users(self):
+        return [v.to_dict() for _, v in self.users.items()]
 
     async def _broadcast_event(self, user: UserContext, msg: dict):
         for conn in user.output_connections[:]:
@@ -83,16 +87,16 @@ class ConnectionManager:
         # 1. СМЕНА ПЛАТФОРМЫ
         if user.current_platform != platform:
             user.current_platform = platform
-            change_msg = {"type": "change_platform", "data": {"platform": platform}}
-            await self._broadcast_event(user, change_msg)
+            await self._broadcast_event(user, {"type": "change_platform", "data": {"platform": platform}})
 
         # 2. НОВЫЙ ПРОДУКТ
         if product is not None:
+            # Проверяем, был ли такой продукт ранее (логика перезаписи)
             old_entry = await self.db.check_and_mark_overwrite(product)
             is_overwrite = old_entry is not None
             old_platform = old_entry['platform'] if is_overwrite else None
 
-            # add_scan всегда пишет is_overwrite=0 для новой записи
+            # Записываем в нашу новую базу (по умолчанию legacy_synced = 0)
             scan_id = await self.db.add_scan(ScanRequest(login=login, platform=platform, product=product))
 
             new_pair_msg = {
@@ -105,6 +109,7 @@ class ConnectionManager:
                 }
             }
 
+            # Рассылка уведомлений о новой паре или перемещении
             if is_overwrite and old_platform != platform:
                 await self._send_to_platform(platform, new_pair_msg)
                 move_msg = {
@@ -115,4 +120,41 @@ class ConnectionManager:
             else:
                 await self._send_to_platform(platform, new_pair_msg)
 
-            asyncio.create_task(asyncio.to_thread(self.feign_db.save_pair, platform, product))
+            # 3. АСИНХРОННАЯ СИНХРОНИЗАЦИЯ С УДАЛЕННОЙ БАЗОЙ
+            # Мы не используем to_thread, так как feign_db.save_pair теперь асинхронная
+            asyncio.create_task(self._sync_with_legacy(scan_id, platform, product))
+
+    async def _sync_with_legacy(self, scan_id: int, platform: int, product: int):
+        """
+        Фоновая задача: ждет ответа от удаленной базы и обновляет статус в нашей.
+        """
+        try:
+            # Вызываем асинхронную заглушку (внутри которой random и sleep)
+            success = await self.feign_db.save_pair(platform, product)
+
+            if success:
+                # Синхронизация прошла успешно (1)
+                await self.db.update_sync_status(scan_id, 1)
+            else:
+                # Ошибка на стороне удаленной базы (-1)
+                await self.db.update_sync_status(scan_id, -1, "Remote database: Random failure")
+        except Exception as e:
+            # В случае любого исключения фиксируем ошибку (-1)
+            logger.error(f"Sync error for scan_id {scan_id}: {e}")
+            await self.db.update_sync_status(scan_id, -1, str(e))
+
+    async def _log_all_users(self):
+        users_state = [v.to_dict() for _, v in self.users.items()]
+        logger.info(f"Users State: {json.dumps(users_state)}")
+
+    async def _broadcast_event(self, user: UserContext, msg: dict):
+        for conn in user.output_connections[:]:
+            try:
+                await conn.send_json(msg)
+            except Exception:
+                pass
+
+    async def _send_to_platform(self, platform_id: int, msg: dict):
+        for user in self.users.values():
+            if user.current_platform == platform_id:
+                await self._broadcast_event(user, msg)
