@@ -1,21 +1,23 @@
-import json
+
 import logging
 import jwt
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query, Header, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query,  HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from jwt.exceptions import PyJWTError
 from pydantic import BaseModel
 
 from database import DatabaseManager
 from connection_manager import ConnectionManager
 from feign_database import FeignDatabase
+from models import ConnectionType
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 JWT_SECRET = "your-super-secret-key-change-me"
+
+
 
 
 class LoginCredentials(BaseModel):
@@ -111,7 +113,7 @@ async def websocket_endpoint(websocket: WebSocket):
     manager: ConnectionManager = websocket.app.state.manager
     feign_db: FeignDatabase = websocket.app.state.feign_db
     await websocket.accept()
-    login, is_input = None, None
+    login, type = None, ConnectionType.NONE
 
     try:
         data = await websocket.receive_json()
@@ -134,15 +136,15 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.close(code=1008)
             return
 
-        is_input = data.get("is_input", False)
-        await manager.connect(websocket, login, is_input)
+        type = ConnectionType[data.get("type")]
+        await manager.connect(websocket, login, type)
 
         user_context = await manager.get_user(login)
         await websocket.send_json(user_context.to_dict())
 
         while True:
             msg = await websocket.receive_json()
-            if msg.get("event") == "new_pair" and is_input:
+            if msg.get("event") == "new_pair" and type:
                 # Приводим к int, так как со сканера может прийти строка
                 p_id = int(msg["platform"]) if msg.get("platform") else None
                 await manager.handle_new_pair(login, p_id, msg.get("product"))
@@ -152,8 +154,8 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WS Error: {e}")
     finally:
-        if login and is_input is not None:
-            await manager.disconnect(websocket, login, is_input)
+        if login and type is not None:
+            await manager.disconnect(websocket, login, type)
 
 @app.get("/api/graphics")
 async def get_graphics_endpoint(

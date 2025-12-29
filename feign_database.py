@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import random
 from typing import Optional, Dict
 
 logger = logging.getLogger(__name__)
@@ -20,3 +22,7 @@ class FeignDatabase:
 
     def save_pair(self, platform: int, product: int) -> Optional[Dict[str, any]]:
         logger.info(f"Сохранение пары: platform={platform}, product={product}")
+        asyncio.sleep(15)
+        is_success = random.random() > 0.2
+        if not is_success:
+            raise Exception("Ошибка")

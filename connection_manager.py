@@ -5,7 +5,7 @@ import json
 import logging
 import random
 import asyncio
-from models import ScanRequest
+from models import ScanRequest, ConnectionType
 from user_context import UserContext
 from database import DatabaseManager
 from feign_database import FeignDatabase
@@ -20,7 +20,7 @@ class ConnectionManager:
         self.feign_db: FeignDatabase = feign_db
         logger.info("ConnectionManager инициализирован")
 
-    async def connect(self, websocket: WebSocket, login: str, is_input: bool):
+    async def connect(self, websocket: WebSocket, login: str, type: ConnectionType):
         if login not in self.users:
             # ВОССТАНОВЛЕНИЕ ПЛАТФОРМЫ: Ищем последнюю запись этого юзера в БД
             last_scans = await self.db.get_scan_pairs(login=login, limit=1)
@@ -30,13 +30,12 @@ class ConnectionManager:
             logger.info(f"Контекст создан. Пользователь: {login}, Восстановленная платформа: {recovered_platform}")
 
         user = self.users[login]
-        if is_input:
+        if type == ConnectionType.WRITER or type == ConnectionType.READWRITER:
             user.input_connections.append(websocket)
-            if len(user.input_connections) == 1:
+            if len(user.input_connections) >= 1:
                 await self._broadcast_event(user, {"event": "scanner_connected"})
-        else:
+        if type == ConnectionType.READER or type == ConnectionType.READWRITER:
             user.output_connections.append(websocket)
-            # Если сканер уже подключен, сразу шлем статус новому монитору
             if user.input_connections:
                 try:
                     await websocket.send_json({"event": "scanner_connected"})
@@ -45,14 +44,14 @@ class ConnectionManager:
 
         await self._log_all_users()
 
-    async def disconnect(self, websocket: WebSocket, login: str, is_input: bool):
+    async def disconnect(self, websocket: WebSocket, login: str, type: ConnectionType):
         if login not in self.users: return
         user = self.users[login]
-        if is_input:
+        if type == ConnectionType.WRITER or type == ConnectionType.READWRITER:
             if websocket in user.input_connections: user.input_connections.remove(websocket)
             if not user.input_connections:
                 await self._broadcast_event(user, {"event": "scanner_refused"})
-        else:
+        if type == ConnectionType.READER or type == ConnectionType.READWRITER:
             if websocket in user.output_connections: user.output_connections.remove(websocket)
 
         if not user.input_connections and not user.output_connections:
