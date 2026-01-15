@@ -1,3 +1,4 @@
+fdb
 pyjwt
 pydantic
 asyncpg

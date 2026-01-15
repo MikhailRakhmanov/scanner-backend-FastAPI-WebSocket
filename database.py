@@ -240,3 +240,23 @@ class DatabaseManager:
         async with self._connect() as conn:
             count = await conn.fetchval(f"SELECT COUNT(*) FROM scans {where_sql}", *params)
             return count or 0
+
+    async def find_product_image(self, product: int):
+        # Разделение id (логика верна)
+        firstpart = product // 1000
+        secondpart = product % 1000
+
+        # Используем $1, $2 для PostgreSQL
+        query = """
+                SELECT svg_filename \
+                FROM processed_images
+                WHERE id_listhaff = $1 \
+                  AND id_prnt = $2 \
+                """
+
+        async with self._connect() as conn:
+            # fetchval возвращает сразу значение svg_filename или None
+            filename = await conn.fetchval(query, firstpart, secondpart)
+            return filename
+
+

@@ -18,14 +18,11 @@ class ConnectionManager:
         self.feign_db: FeignDatabase = feign_db
         logger.info("ConnectionManager инициализирован")
 
-    async def connect(self, websocket: WebSocket, login: str, type: ConnectionType):
+    async def connect(self, websocket: WebSocket, user: Dict[str, any], type: ConnectionType):
+        login = user["login"]
         if login not in self.users:
-            # ВОССТАНОВЛЕНИЕ ПЛАТФОРМЫ: Ищем последнюю запись этого юзера в БД
-            last_scans = await self.db.get_scan_pairs(login=login, limit=1)
-            recovered_platform = last_scans[0]["platform"] if last_scans else None
-
-            self.users[login] = UserContext(login=login, current_platform=recovered_platform)
-            logger.info(f"Контекст создан. Пользователь: {login}, Восстановленная платформа: {recovered_platform}")
+            self.users[login] = UserContext(login=login, id = user["id"], fullname= user["fullname"])
+            logger.info(f"Контекст создан. Пользователь: {login}")
 
         user = self.users[login]
         if type in [ConnectionType.WRITER, ConnectionType.READWRITER]:
@@ -60,7 +57,7 @@ class ConnectionManager:
 
     async def _log_all_users(self):
         users_state = [v.to_dict() for _, v in self.users.items()]
-        logger.info(f"Users State: {json.dumps(users_state)}")
+        logger.info(f"Users State: {json.dumps(users_state, ensure_ascii=False)}")
 
     async def get_user(self, login: str) -> Optional[UserContext]:
         return self.users.get(login)
@@ -145,7 +142,7 @@ class ConnectionManager:
 
     async def _log_all_users(self):
         users_state = [v.to_dict() for _, v in self.users.items()]
-        logger.info(f"Users State: {json.dumps(users_state)}")
+        logger.info(f"Users State: {json.dumps(users_state, ensure_ascii=False)}")
 
     async def _broadcast_event(self, user: UserContext, msg: dict):
         for conn in user.output_connections[:]:

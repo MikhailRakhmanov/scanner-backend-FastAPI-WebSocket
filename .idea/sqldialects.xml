@@ -1,6 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="SqlDialectMappings">
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/api/api9f.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/api/api9fdrop.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/empbuild/employe2.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/package/fbout-body.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/package/fbout-header.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/package/fbout-test.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/examples/udf/udf.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/misc/intl.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/misc/upgrade/v3.0/security_database.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/misc/upgrade/v4.0/udf_replace.sql" dialect="GenericSQL" />
+    <file url="file://$PROJECT_DIR$/Firebird-4.0.6.3221-0-x64/plugins/udr/UdfBackwardCompatibility.sql" dialect="GenericSQL" />
     <file url="file://$PROJECT_DIR$/database.py" dialect="GenericSQL" />
     <file url="PROJECT" dialect="SQLite" />
   </component>

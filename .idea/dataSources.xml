@@ -1,12 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
-    <data-source source="LOCAL" name="dev@localhost" uuid="7ab7ccb9-ac14-489d-887d-01583eb71e8d">
+    <data-source source="LOCAL" name="postgres@tsp.cloudpub.ru" uuid="a9280bd1-6fd3-4782-a12f-5e335a0980a5">
       <driver-ref>postgresql</driver-ref>
       <synchronize>true</synchronize>
       <jdbc-driver>org.postgresql.Driver</jdbc-driver>
-      <jdbc-url>jdbc:postgresql://localhost:5432/dev</jdbc-url>
+      <jdbc-url>jdbc:postgresql://tsp.cloudpub.ru:20286/postgres</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
+    <data-source source="LOCAL" name="BASEPLAST_29122025_V152.fdb@tcp.cloudpub.ru" uuid="713db633-bc59-4470-81c2-06711eaf078f">
+      <driver-ref>firebird</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.firebirdsql.jdbc.FBDriver</jdbc-driver>
+      <jdbc-url>jdbc:firebirdsql://tcp.cloudpub.ru:16501/C:\DataBase\BASEPLAST_29122025_V152.fdb</jdbc-url>
+      <jdbc-additional-properties>
+        <property name="database.jdbc.dont.escape" value="true" />
+      </jdbc-additional-properties>
+      <working-dir>$ProjectFileDir$</working-dir>
+      <driver-properties>
+        <property name="encoding" value="WIN1251" />
+        <property name="enableProtocol" value="*" />
+      </driver-properties>
     </data-source>
   </component>
 </project>

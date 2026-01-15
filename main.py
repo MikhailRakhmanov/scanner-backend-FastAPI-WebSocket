@@ -3,24 +3,30 @@ import jwt
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.responses import FileResponse
 
 from database import DatabaseManager
 from connection_manager import ConnectionManager
 from feign_database import FeignDatabase
 from models import ConnectionType
-
+load_dotenv()
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = "your-super-secret-key-change-me"
+JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-key-change-me")
 
 # Укажите свои данные подключения здесь или через переменную окружения DATABASE_URL
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/dev")
-
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@tsp.cloudpub.ru:20286/production?options=-c search_path=fgs")
+FEIGN_DATABASE_URL = os.getenv("FEIGN_DATABASE_URL", "firebirdsql://SYSDBA:masterkey@tcp.cloudpub.ru:16501/C:/DataBase/BASEPLAST_29122025_V152.fdb?charset=WIN1251&enableProtocol=*")
+IMAGE_DIR = os.getenv("IMAGE_DIR", "./img")
+DLL_PATH = os.getenv("DLL_PATH","./Firebird-4.0.6.3221-0-x64/fbclient.dll")
+PORT = int(os.getenv("PORT", "8000"))
 
 class LoginCredentials(BaseModel):
     login: str
@@ -30,10 +36,11 @@ class LoginCredentials(BaseModel):
 async def lifespan(app: FastAPI):
     # 1. Инициализация базы данных с корректным DSN
     db = DatabaseManager(dsn=DATABASE_URL)
+
     try:
         # Пробуем инициализировать таблицы (теперь с корректным await внутри)
         await db.init_database()
-        feign_db = FeignDatabase()
+        feign_db = FeignDatabase(DLL_PATH, FEIGN_DATABASE_URL)
         manager = ConnectionManager(db, feign_db)
 
         # Сохраняем объекты в state приложения
@@ -117,9 +124,10 @@ async def get_history(
 @app.post("/auth/login")
 async def authenticate_user(credentials: LoginCredentials):
     feign_db: FeignDatabase = app.state.feign_db
-    if not feign_db.get_user_by_login(credentials.login):
+    user = feign_db.get_user_by_login(credentials.login)
+    if not user:
         raise HTTPException(status_code=401, detail="Пользователь не найден")
-    token = jwt.encode({"login": credentials.login}, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode({"login": credentials.login, "name": user["fullname"], "id": user["id"]}, JWT_SECRET, algorithm="HS256")
     return {"login": credentials.login, "token": token}
 
 @app.get("/api/scanners")
@@ -149,13 +157,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 return
         else:
             login = data.get("login")
-
-        if not login or not feign_db.get_user_by_login(login):
+        user = feign_db.get_user_by_login(login)
+        if not login or not user:
             await websocket.close(code=1008)
             return
 
         conn_type = ConnectionType[data.get("type", "NONE")]
-        await manager.connect(websocket, login, conn_type)
+        await manager.connect(websocket, user, conn_type)
 
         user_context = await manager.get_user(login)
         await websocket.send_json(user_context.to_dict())
@@ -191,8 +199,21 @@ async def get_graphics_endpoint(
     return data
 
 
+@app.get("/api/image/{product}")
+async def get_image(product: int):
+    db: DatabaseManager = app.state.db
+    image_path = await db.find_product_image(product)
+    # Construct path and prevent directory traversal attacks
+    file_path = os.path.join(IMAGE_DIR, image_path)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return FileResponse(file_path)
+
+
 if __name__ == "__main__":
     import uvicorn
 
     logger.info("Запуск сервера uvicorn...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
