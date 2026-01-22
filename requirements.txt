@@ -1,6 +1,9 @@
-fdb
+firebirdsql
+starlette
+python-dotenv
 pyjwt
 pydantic
 asyncpg
 fastapi
-uvicorn
+passlib
+uvicorn[standard]

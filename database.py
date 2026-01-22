@@ -1,10 +1,10 @@
-import os
-import asyncpg
 import logging
-import asyncio
-from typing import Optional, List, Dict
-from datetime import datetime
 from contextlib import asynccontextmanager
+from datetime import datetime, date
+from typing import Optional, List, Dict, Union
+
+import asyncpg
+
 from models import ScanRequest
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,6 @@ class DatabaseManager:
     async def _get_pool(self) -> asyncpg.Pool:
         """Инициализирует пул соединений, если он еще не создан."""
         if self._pool is None:
-            # ВНИМАНИЕ: asyncpg.create_pool требует await для инициализации
             self._pool = await asyncpg.create_pool(
                 dsn=self.dsn,
                 min_size=5,
@@ -26,6 +25,16 @@ class DatabaseManager:
             )
             logger.info("Пул соединений PostgreSQL успешно инициализирован")
         return self._pool
+
+    async def ping(self) -> bool:
+        """Проверяет соединение с базой данных."""
+        try:
+            async with self._connect() as conn:
+                res = await conn.fetchval("SELECT 1")
+                return res == 1
+        except Exception as e:
+            logger.error(f"PostgreSQL ping failed: {e}")
+            return False
 
     @asynccontextmanager
     async def _connect(self):
@@ -43,45 +52,22 @@ class DatabaseManager:
     async def init_database(self):
         """Создает таблицы и индексы при запуске приложения."""
         async with self._connect() as conn:
-            await conn.execute("""
-                               CREATE TABLE IF NOT EXISTS scans
-                               (
-                                   id
-                                   SERIAL
-                                   PRIMARY
-                                   KEY,
-                                   platform
-                                   INTEGER
-                                   NOT
-                                   NULL,
-                                   product
-                                   INTEGER
-                                   NOT
-                                   NULL,
-                                   scan_date
-                                   TIMESTAMP
-                                   DEFAULT
-                                   CURRENT_TIMESTAMP,
-                                   legacy_synced
-                                   INTEGER
-                                   DEFAULT
-                                   0,
-                                   legacy_integration_error
-                                   TEXT,
-                                   login
-                                   TEXT
-                                   NOT
-                                   NULL
-                                   DEFAULT
-                                   'unknown',
-                                   is_overwrite
-                                   BOOLEAN
-                                   DEFAULT
-                                   FALSE
-                               );
-                               CREATE INDEX IF NOT EXISTS idx_platform_product ON scans(platform, product);
-                               CREATE INDEX IF NOT EXISTS idx_scan_date ON scans(scan_date);
-                               """)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scans (
+                    id SERIAL PRIMARY KEY,
+                    platform INTEGER NOT NULL,
+                    product INTEGER NOT NULL,
+                    scan_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    legacy_synced INTEGER DEFAULT 0,
+                    legacy_integration_error TEXT,
+                    login TEXT NOT NULL DEFAULT 'unknown',
+                    is_overwrite BOOLEAN DEFAULT FALSE
+                );
+                CREATE INDEX IF NOT EXISTS idx_platform_product ON scans (platform, product);
+                CREATE INDEX IF NOT EXISTS idx_scan_date ON scans (scan_date);
+                """
+            )
             logger.info("База данных инициализирована: таблицы и индексы проверены")
 
     async def check_and_mark_overwrite(self, product_id: int) -> Optional[Dict]:
@@ -121,73 +107,141 @@ class DatabaseManager:
             await conn.execute(query, scan_id, status, error_msg)
             logger.info(f"БД: Статус синхронизации для ID {scan_id} изменен на {status}")
 
-    def _build_where_conditions(self, **kwargs):
-        """Вспомогательный метод для построения SQL-условий."""
+    def _build_where_conditions(
+            self,
+            id: Optional[int] = None,
+            platform: Optional[int] = None,
+            login: Optional[str] = None,
+            product: Optional[int] = None,
+            legacy_synced: Optional[int] = None,
+            is_overwrite: Optional[bool] = None,
+            date_from: Optional[Union[date, str]] = None,
+            date_to: Optional[Union[date, str]] = None
+    ) -> tuple[str, list]:
+        """Вспомогательный метод для построения SQL-условий (строго типизированный)."""
         where_clauses = []
         params = []
         counter = 1
 
-        obj_id = kwargs.get('id')
-        if obj_id is not None and str(obj_id).strip() != "":
-            return "WHERE id = $1", [int(obj_id)]
+        # 1. Фильтр по ID (если есть, остальные игнорируем или комбинируем - тут приоритет ID)
+        if id is not None:
+            return "WHERE id = $1", [id]
 
-        mapping = {
-            'platform': 'platform = ',
-            'login': 'login ILIKE ',
-            'product': 'product = ',
-            'legacy_synced': 'legacy_synced = ',
-            'is_overwrite': 'is_overwrite = '
-        }
-
-        for key, sql_part in mapping.items():
-            val = kwargs.get(key)
-            if val is not None and str(val).strip() != "":
-                if key == 'login':
-                    where_clauses.append(f"{sql_part}${counter}")
-                    params.append(f"%{val}%")
-                else:
-                    where_clauses.append(f"{sql_part}${counter}")
-                    params.append(val if key == 'is_overwrite' else int(val))
-                counter += 1
-
-        date_from = kwargs.get('date_from')
-        if date_from:
-            where_clauses.append(f"scan_date >= ${counter}")
-            params.append(datetime.strptime(f"{date_from} 00:00:00", '%Y-%m-%d %H:%M:%S'))
+        # 2. Обычные поля
+        if platform is not None:
+            where_clauses.append(f"platform = ${counter}")
+            params.append(platform)
             counter += 1
 
-        date_to = kwargs.get('date_to')
+        if login is not None and login.strip() != "":
+            where_clauses.append(f"login ILIKE ${counter}")
+            params.append(f"%{login}%")
+            counter += 1
+
+        if product is not None:
+            where_clauses.append(f"product = ${counter}")
+            params.append(product)
+            counter += 1
+
+        if legacy_synced is not None:
+            where_clauses.append(f"legacy_synced = ${counter}")
+            params.append(legacy_synced)
+            counter += 1
+
+        if is_overwrite is not None:
+            where_clauses.append(f"is_overwrite = ${counter}")
+            params.append(is_overwrite)
+            counter += 1
+
+        # 3. Даты
+        if date_from:
+            where_clauses.append(f"scan_date >= ${counter}")
+            # Приводим к datetime начала дня
+            d_val = date_from if isinstance(date_from, datetime) else datetime.strptime(str(date_from), '%Y-%m-%d')
+            # Если это date (без времени), делаем начало дня
+            if isinstance(d_val, date) and not isinstance(d_val, datetime):
+                d_val = datetime.combine(d_val, datetime.min.time())
+
+            params.append(d_val)
+            counter += 1
+
         if date_to:
             where_clauses.append(f"scan_date <= ${counter}")
-            params.append(datetime.strptime(f"{date_to} 23:59:59", '%Y-%m-%d %H:%M:%S'))
+            # Приводим к datetime конца дня
+            d_val = date_to if isinstance(date_to, datetime) else datetime.strptime(str(date_to), '%Y-%m-%d')
+            # Добавляем время 23:59:59
+            if isinstance(d_val, date) and not isinstance(d_val, datetime):
+                d_val = datetime.combine(d_val, datetime.max.time().replace(microsecond=0))
+            else:
+                # Если это datetime, просто подменяем время (или оставляем как есть, зависит от логики, тут делаем конец дня)
+                d_val = d_val.replace(hour=23, minute=59, second=59)
+
+            params.append(d_val)
             counter += 1
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         return where_sql, params
 
-    async def get_scan_pairs(self, **kwargs) -> List[Dict]:
+    async def get_scan_pairs(
+            self,
+            id: Optional[int] = None,
+            platform: Optional[int] = None,
+            login: Optional[str] = None,
+            product: Optional[int] = None,
+            legacy_synced: Optional[int] = None,
+            is_overwrite: Optional[bool] = None,
+            date_from: Optional[Union[date, str]] = None,
+            date_to: Optional[Union[date, str]] = None,
+            limit: int = 100,
+            offset: int = 0,
+            sort: str = 'scan_date,desc'
+    ) -> List[Dict]:
         """Возвращает список отсканированных пар с фильтрацией."""
-        where_sql, params = self._build_where_conditions(**kwargs)
-        limit = int(kwargs.get('limit', 100))
-        offset = int(kwargs.get('offset', 0))
 
-        sort_raw = kwargs.get('sort', 'scan_date,desc').split(',')
-        sort_field = sort_raw[0] if sort_raw[0] in ['id', 'login', 'platform', 'product',
-                                                    'legacy_synced'] else 'scan_date'
+        where_sql, params = self._build_where_conditions(
+            id=id, platform=platform, login=login, product=product,
+            legacy_synced=legacy_synced, is_overwrite=is_overwrite,
+            date_from=date_from, date_to=date_to
+        )
+
+        # Сортировка
+        sort_raw = sort.split(',')
+        allowed_sort_fields = ['id', 'login', 'platform', 'product', 'legacy_synced', 'scan_date']
+        sort_field = sort_raw[0] if sort_raw[0] in allowed_sort_fields else 'scan_date'
         sort_order = 'ASC' if len(sort_raw) > 1 and sort_raw[1].lower() == 'asc' else 'DESC'
+
+        # Параметры limit/offset добавляем в конец списка params
+        idx_limit = len(params) + 1
+        idx_offset = len(params) + 2
 
         query = f"""
             SELECT * FROM scans {where_sql} 
             ORDER BY {sort_field} {sort_order} 
-            LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+            LIMIT ${idx_limit} OFFSET ${idx_offset}
         """
+
         async with self._connect() as conn:
             rows = await conn.fetch(query, *params, limit, offset)
             return [dict(r) for r in rows]
 
-    async def get_graphics_data(self, **kwargs) -> Dict:
-        """Собирает полную статистику для графиков (Postgres версия)."""
-        where_sql, params = self._build_where_conditions(**kwargs)
+    async def get_graphics_data(
+            self,
+            id: Optional[int] = None,
+            platform: Optional[int] = None,
+            login: Optional[str] = None,
+            product: Optional[int] = None,
+            legacy_synced: Optional[int] = None,
+            is_overwrite: Optional[bool] = None,
+            date_from: Optional[Union[date, str]] = None,
+            date_to: Optional[Union[date, str]] = None
+    ) -> Dict:
+        """Собирает полную статистику для графиков."""
+
+        where_sql, params = self._build_where_conditions(
+            id=id, platform=platform, login=login, product=product,
+            legacy_synced=legacy_synced, is_overwrite=is_overwrite,
+            date_from=date_from, date_to=date_to
+        )
 
         async with self._connect() as conn:
             # 1. Сводная статистика
@@ -234,19 +288,31 @@ class DatabaseManager:
                 "by_platform": [dict(r) for r in rows_platform]
             }
 
-    async def get_scan_pairs_count(self, **kwargs) -> int:
+    async def get_scan_pairs_count(
+            self,
+            id: Optional[int] = None,
+            platform: Optional[int] = None,
+            login: Optional[str] = None,
+            product: Optional[int] = None,
+            legacy_synced: Optional[int] = None,
+            is_overwrite: Optional[bool] = None,
+            date_from: Optional[Union[date, str]] = None,
+            date_to: Optional[Union[date, str]] = None
+    ) -> int:
         """Возвращает общее количество записей по фильтру."""
-        where_sql, params = self._build_where_conditions(**kwargs)
+        where_sql, params = self._build_where_conditions(
+            id=id, platform=platform, login=login, product=product,
+            legacy_synced=legacy_synced, is_overwrite=is_overwrite,
+            date_from=date_from, date_to=date_to
+        )
         async with self._connect() as conn:
             count = await conn.fetchval(f"SELECT COUNT(*) FROM scans {where_sql}", *params)
             return count or 0
 
     async def find_product_image(self, product: int):
-        # Разделение id (логика верна)
         firstpart = product // 1000
         secondpart = product % 1000
 
-        # Используем $1, $2 для PostgreSQL
         query = """
                 SELECT svg_filename \
                 FROM processed_images
@@ -255,8 +321,5 @@ class DatabaseManager:
                 """
 
         async with self._connect() as conn:
-            # fetchval возвращает сразу значение svg_filename или None
             filename = await conn.fetchval(query, firstpart, secondpart)
             return filename
-
-

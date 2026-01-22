@@ -1,3 +1,5 @@
+import os
+from datetime import date
 from typing import Dict, Optional
 from fastapi import WebSocket
 import json
@@ -18,27 +20,36 @@ class ConnectionManager:
         self.feign_db: FeignDatabase = feign_db
         logger.info("ConnectionManager инициализирован")
 
-    async def connect(self, websocket: WebSocket, user: Dict[str, any], type: ConnectionType):
-        login = user["login"]
+    async def connect(self, websocket: WebSocket, user_data: Dict[str, any], conn_type: ConnectionType):
+        login = user_data["login"]
+
+        # 1. Создаем контекст, если его нет
         if login not in self.users:
-            self.users[login] = UserContext(login=login, id = user["id"], fullname= user["fullname"])
+            self.users[login] = UserContext(
+                login=login,
+                id=user_data["id"],
+                fullname=user_data["fullname"]
+            )
             logger.info(f"Контекст создан. Пользователь: {login}")
 
-        user = self.users[login]
-        if type in [ConnectionType.WRITER, ConnectionType.READWRITER]:
-            user.input_connections.append(websocket)
-            if len(user.input_connections) >= 1:
-                await self._broadcast_event(user, {"event": "scanner_connected"})
+        user_ctx = self.users[login]
 
-        if type in [ConnectionType.READER, ConnectionType.READWRITER]:
-            user.output_connections.append(websocket)
-            if user.input_connections:
+        if conn_type in [ConnectionType.WRITER, ConnectionType.READWRITER]:
+            user_ctx.input_connections.append(websocket)
+            if len(user_ctx.input_connections) >= 1:
+                await self._broadcast_event(user_ctx, {"event": "scanner_connected"})
+
+        if conn_type in [ConnectionType.READER, ConnectionType.READWRITER]:
+            user_ctx.output_connections.append(websocket)
+            if user_ctx.input_connections:
                 try:
                     await websocket.send_json({"event": "scanner_connected"})
                 except Exception:
                     pass
 
-        await self._log_all_users()
+        # 5. Логирование (только в DEV)
+        if os.getenv("MODE") == "DEV":
+            await self._log_all_users()
 
     async def disconnect(self, websocket: WebSocket, login: str, type: ConnectionType):
         if login not in self.users: return
@@ -84,7 +95,18 @@ class ConnectionManager:
         # 1. СМЕНА ПЛАТФОРМЫ
         if user.current_platform != platform:
             user.current_platform = platform
-            await self._broadcast_event(user, {"type": "change_platform", "data": {"platform": platform}})
+            await self._broadcast_event(user, {
+                "type": "change_platform",
+                "data": {
+                    "platform": platform,
+                    "products": await self.db.get_scan_pairs(platform=platform,
+                                                      is_overwrite=False,
+                                                      date_from=date.today(),
+                                                      date_to=date.today()
+                                                      )
+                }
+            }
+                                        )
 
         # 2. НОВЫЙ ПРОДУКТ
         if product is not None:
@@ -139,19 +161,3 @@ class ConnectionManager:
             # В случае любого исключения фиксируем ошибку (-1)
             logger.error(f"Sync error for scan_id {scan_id}: {e}")
             await self.db.update_sync_status(scan_id, -1, str(e))
-
-    async def _log_all_users(self):
-        users_state = [v.to_dict() for _, v in self.users.items()]
-        logger.info(f"Users State: {json.dumps(users_state, ensure_ascii=False)}")
-
-    async def _broadcast_event(self, user: UserContext, msg: dict):
-        for conn in user.output_connections[:]:
-            try:
-                await conn.send_json(msg)
-            except Exception:
-                pass
-
-    async def _send_to_platform(self, platform_id: int, msg: dict):
-        for user in self.users.values():
-            if user.current_platform == platform_id:
-                await self._broadcast_event(user, msg)
