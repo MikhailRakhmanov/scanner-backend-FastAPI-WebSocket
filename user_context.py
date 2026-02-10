@@ -25,3 +25,6 @@ class UserContext:
                 "output_ids": [id(conn) for conn in self.output_connections],
                 "event": "register_success"
             }
+
+
+    # INSERT INTO fgs.processed_images (id_listhaff, id_prnt, svg_filename, imported_at, status) VALUES (458590, 32, '90/458590_32.svg', '2026-01-15 11:47:03.591180', 'success');

@@ -62,7 +62,7 @@ class DatabaseManager:
                     legacy_synced INTEGER DEFAULT 0,
                     legacy_integration_error TEXT,
                     login TEXT NOT NULL DEFAULT 'unknown',
-                    is_overwrite BOOLEAN DEFAULT FALSE
+                    is_overwritten BOOLEAN DEFAULT FALSE
                 );
                 CREATE INDEX IF NOT EXISTS idx_platform_product ON scans (platform, product);
                 CREATE INDEX IF NOT EXISTS idx_scan_date ON scans (scan_date);
@@ -77,7 +77,7 @@ class DatabaseManager:
                 query = "SELECT id, platform FROM scans WHERE product = $1 ORDER BY scan_date DESC LIMIT 1"
                 row = await conn.fetchrow(query, product_id)
                 if row:
-                    await conn.execute("UPDATE scans SET is_overwrite = TRUE WHERE id = $1", row['id'])
+                    await conn.execute("UPDATE scans SET is_overwritten = TRUE WHERE id = $1", row['id'])
                     return {"id": row['id'], "platform": row['platform']}
         return None
 
@@ -88,7 +88,7 @@ class DatabaseManager:
         now = datetime.now()
 
         query = """
-                INSERT INTO scans (login, platform, product, scan_date, is_overwrite, legacy_synced)
+                INSERT INTO scans (login, platform, product, scan_date, is_overwritten, legacy_synced)
                 VALUES ($1, $2, $3, $4, FALSE, 0) RETURNING id \
                 """
         async with self._connect() as conn:
@@ -114,7 +114,7 @@ class DatabaseManager:
             login: Optional[str] = None,
             product: Optional[int] = None,
             legacy_synced: Optional[int] = None,
-            is_overwrite: Optional[bool] = None,
+            is_overwritten: Optional[bool] = None,
             date_from: Optional[Union[date, str]] = None,
             date_to: Optional[Union[date, str]] = None
     ) -> tuple[str, list]:
@@ -148,9 +148,9 @@ class DatabaseManager:
             params.append(legacy_synced)
             counter += 1
 
-        if is_overwrite is not None:
-            where_clauses.append(f"is_overwrite = ${counter}")
-            params.append(is_overwrite)
+        if is_overwritten is not None:
+            where_clauses.append(f"is_overwritten = ${counter}")
+            params.append(is_overwritten)
             counter += 1
 
         # 3. Даты
@@ -189,7 +189,7 @@ class DatabaseManager:
             login: Optional[str] = None,
             product: Optional[int] = None,
             legacy_synced: Optional[int] = None,
-            is_overwrite: Optional[bool] = None,
+            is_overwritten: Optional[bool] = None,
             date_from: Optional[Union[date, str]] = None,
             date_to: Optional[Union[date, str]] = None,
             limit: int = 100,
@@ -200,7 +200,7 @@ class DatabaseManager:
 
         where_sql, params = self._build_where_conditions(
             id=id, platform=platform, login=login, product=product,
-            legacy_synced=legacy_synced, is_overwrite=is_overwrite,
+            legacy_synced=legacy_synced, is_overwritten=is_overwritten,
             date_from=date_from, date_to=date_to
         )
 
@@ -231,7 +231,7 @@ class DatabaseManager:
             login: Optional[str] = None,
             product: Optional[int] = None,
             legacy_synced: Optional[int] = None,
-            is_overwrite: Optional[bool] = None,
+            is_overwritten: Optional[bool] = None,
             date_from: Optional[Union[date, str]] = None,
             date_to: Optional[Union[date, str]] = None
     ) -> Dict:
@@ -239,7 +239,7 @@ class DatabaseManager:
 
         where_sql, params = self._build_where_conditions(
             id=id, platform=platform, login=login, product=product,
-            legacy_synced=legacy_synced, is_overwrite=is_overwrite,
+            legacy_synced=legacy_synced, is_overwritten=is_overwritten,
             date_from=date_from, date_to=date_to
         )
 
@@ -247,7 +247,7 @@ class DatabaseManager:
             # 1. Сводная статистика
             query_summary = f"""
                 SELECT COUNT(*) as total,
-                       SUM(CASE WHEN is_overwrite = TRUE THEN 1 ELSE 0 END) as overwrites,
+                       SUM(CASE WHEN is_overwritten = TRUE THEN 1 ELSE 0 END) as overwrites,
                        SUM(CASE WHEN legacy_synced = -1 THEN 1 ELSE 0 END) as errors
                 FROM scans {where_sql}
             """
@@ -295,14 +295,14 @@ class DatabaseManager:
             login: Optional[str] = None,
             product: Optional[int] = None,
             legacy_synced: Optional[int] = None,
-            is_overwrite: Optional[bool] = None,
+            is_overwritten: Optional[bool] = None,
             date_from: Optional[Union[date, str]] = None,
             date_to: Optional[Union[date, str]] = None
     ) -> int:
         """Возвращает общее количество записей по фильтру."""
         where_sql, params = self._build_where_conditions(
             id=id, platform=platform, login=login, product=product,
-            legacy_synced=legacy_synced, is_overwrite=is_overwrite,
+            legacy_synced=legacy_synced, is_overwritten=is_overwritten,
             date_from=date_from, date_to=date_to
         )
         async with self._connect() as conn:

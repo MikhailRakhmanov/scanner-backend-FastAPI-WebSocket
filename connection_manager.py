@@ -5,6 +5,9 @@ from fastapi import WebSocket
 import json
 import logging
 import asyncio
+
+from fastapi.encoders import jsonable_encoder
+
 from models import ScanRequest, ConnectionType
 from user_context import UserContext
 from database import DatabaseManager
@@ -79,9 +82,9 @@ class ConnectionManager:
     async def _broadcast_event(self, user: UserContext, msg: dict):
         for conn in user.output_connections[:]:
             try:
-                await conn.send_json(msg)
-            except:
-                pass
+                await conn.send_json(jsonable_encoder(msg))
+            except Exception as ex:
+                logger.error(f"WebSocket error: {ex}")
 
     async def _send_to_platform(self, platform_id: int, msg: dict):
         for user in self.users.values():
@@ -89,21 +92,24 @@ class ConnectionManager:
                 await self._broadcast_event(user, msg)
 
     async def handle_new_pair(self, login: str, platform: int, product: int | None):
+
         if login not in self.users: return
+
         user: UserContext = self.users[login]
 
         # 1. СМЕНА ПЛАТФОРМЫ
         if user.current_platform != platform:
             user.current_platform = platform
             await self._broadcast_event(user, {
-                "type": "change_platform",
+                "event": "change_platform",
                 "data": {
                     "platform": platform,
                     "products": await self.db.get_scan_pairs(platform=platform,
-                                                      is_overwrite=False,
-                                                      date_from=date.today(),
-                                                      date_to=date.today()
-                                                      )
+                                                             is_overwritten=False,
+                                                             date_from=date.today(),
+                                                             date_to=date.today()
+                                                             , sort="scan_date,desc"
+                                                             )
                 }
             }
                                         )
@@ -112,27 +118,27 @@ class ConnectionManager:
         if product is not None:
             # Проверяем, был ли такой продукт ранее (логика перезаписи)
             old_entry = await self.db.check_and_mark_overwrite(product)
-            is_overwrite = old_entry is not None
-            old_platform = old_entry['platform'] if is_overwrite else None
+            is_overwriting = old_entry is not None
+            old_platform = old_entry['platform'] if is_overwriting else None
 
             # Записываем в нашу новую базу (по умолчанию legacy_synced = 0)
             scan_id = await self.db.add_scan(ScanRequest(login=login, platform=platform, product=product))
 
             new_pair_msg = {
-                "type": "new_pair",
+                "event": "new_pair",
                 "data": {
                     "platform": platform,
                     "product": {"id": product},
                     "scanId": scan_id,
-                    "is_overwrite": is_overwrite
+                    "is_overwriting": is_overwriting
                 }
             }
 
             # Рассылка уведомлений о новой паре или перемещении
-            if is_overwrite and old_platform != platform:
+            if is_overwriting and old_platform != platform:
                 await self._send_to_platform(platform, new_pair_msg)
                 move_msg = {
-                    "type": "product_moved",
+                    "event": "product_moved",
                     "data": {"product": product, "from_platform": old_platform, "to_platform": platform}
                 }
                 await self._send_to_platform(old_platform, move_msg)
